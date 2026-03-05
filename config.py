@@ -12,14 +12,10 @@ LOCAL_IP = '192.168.0.2'  # ВСТАВЬТЕ СЮДА ВАШ IP
 PORT = 8443  # Порт для HTTPS
 
 # URL для Mini App
-APP_URL = f'https://{LOCAL_IP}:{PORT}'
+APP_URL = f"https://music-bot-final-51qb.onrender.com"
 
 # Пути к SSL сертификатам
 SSL_CERT = 'cert.pem'
 SSL_KEY = 'key.pem'
 
-print("="*50)
-print(f"✅ Локальный IP: {LOCAL_IP}")
-print(f"🌐 URL плеера: {APP_URL}/player")
-print("="*50)
 RENDER_EXTERNAL_URL = "https://music-bot-final-51qb.onrender.com"
