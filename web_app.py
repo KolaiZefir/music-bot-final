@@ -60,25 +60,28 @@ def webhook():
             logger.info(f"📨 Сообщение от {user.get('first_name')}: {text}")
             
             # Если это /start - отвечаем
-            if text == '/start':
-                logger.info(f"🔥 Отвечаем на /start для {chat_id}")
-                
-                # Отправляем сообщение через бота (синхронно)
-                bot.send_message(
-                    chat_id=chat_id,
-                    text=f"🎵 Привет, {user.get('first_name')}!\n\nНажми кнопку ниже:",
-                    reply_markup=json.dumps({
-                        "inline_keyboard": [[
-                            {"text": "🎵 Открыть плеер", "web_app": {"url": f"{config.FRONTEND_URL}?user_id={user.get('id')}"}}
-                        ]]
-                    })
-                )
-                logger.info("✅ Ответ отправлен")
+if text == '/start':
+    logger.info(f"🔥 Отвечаем на /start для {chat_id}")
+    
+    try:
+        # Отправляем сообщение и СОХРАНЯЕМ результат
+        sent_message = bot.send_message(
+            chat_id=chat_id,
+            text=f"🎵 Привет, {user.get('first_name')}!\n\nНажми кнопку ниже, чтобы открыть музыкальный плеер:",
+            reply_markup=json.dumps({
+                "inline_keyboard": [[
+                    {"text": "🎵 Открыть плеер", "web_app": {"url": f"{config.FRONTEND_URL}?user_id={user.get('id')}"}}
+                ]]
+            })
+        )
+        logger.info(f"✅ Ответ отправлен, message_id: {sent_message.message_id}")
         
-        return 'ok', 200
+        # Проверяем, что бот вообще может писать этому пользователю
+        bot_info = bot.get_me()
+        logger.info(f"🤖 Информация о боте: @{bot_info.username}")
         
     except Exception as e:
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        logger.error(f"❌ ОШИБКА ПРИ ОТПРАВКЕ: {e}")
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
