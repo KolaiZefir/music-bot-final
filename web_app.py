@@ -3,8 +3,9 @@ import os
 import sys
 import traceback
 import json
+import asyncio
 from flask import Flask, request, jsonify
-import telegram
+from telegram import Bot, Update
 import config
 
 # --- 1. ЛОГИРОВАНИЕ ---
@@ -19,8 +20,15 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 
-# --- 3. Простой бот ---
-bot = telegram.Bot(token=config.BOT_TOKEN)
+# --- 3. СОЗДАЁМ БОТА И ЦИКЛ СОБЫТИЙ ---
+bot = Bot(token=config.BOT_TOKEN)
+
+# Создаём глобальный цикл событий
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# Инициализируем бота
+loop.run_until_complete(bot.initialize())
 
 # --- 4. Главная страница ---
 @app.route('/')
@@ -31,7 +39,7 @@ def index():
         "webhook_url": f"{config.RENDER_EXTERNAL_URL}/webhook"
     })
 
-# --- 5. ВЕБХУК (ИСПРАВЛЕННЫЙ) ---
+# --- 5. ВЕБХУК ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Принимает обновления от Telegram"""
@@ -39,9 +47,6 @@ def webhook():
     logger.info("🔥 ПОЛУЧЕН ЗАПРОС НА /webhook")
     
     try:
-        # Логируем заголовки
-        logger.info(f"Headers: {dict(request.headers)}")
-        
         # Получаем данные
         update_data = request.get_json()
         logger.info(f"Body: {update_data}")
@@ -65,34 +70,43 @@ def webhook():
             if text == '/start':
                 logger.info(f"🔥 Отвечаем на /start для {chat_id}")
                 
+                # СОЗДАЁМ КОРУТИНУ ДЛЯ ОТПРАВКИ
+                async def send_reply():
+                    try:
+                        msg = await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"🎵 Привет, {first_name}!\n\nНажми кнопку ниже, чтобы открыть музыкальный плеер:",
+                            reply_markup=json.dumps({
+                                "inline_keyboard": [[
+                                    {"text": "🎵 Открыть плеер", "web_app": {"url": f"{config.FRONTEND_URL}?user_id={user_id}"}}
+                                ]]
+                            })
+                        )
+                        logger.info(f"✅ Ответ отправлен, message_id: {msg.message_id}")
+                        return msg
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка в send_reply: {e}")
+                        logger.error(traceback.format_exc())
+                        return None
+                
+                # ЗАПУСКАЕМ КОРУТИНУ В ГЛОБАЛЬНОМ ЦИКЛЕ
+                future = asyncio.run_coroutine_threadsafe(send_reply(), loop)
                 try:
-                    # Отправляем сообщение
-                    sent_message = bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🎵 Привет, {first_name}!\n\nНажми кнопку ниже, чтобы открыть музыкальный плеер:",
-                        reply_markup=json.dumps({
-                            "inline_keyboard": [[
-                                {"text": "🎵 Открыть плеер", "web_app": {"url": f"{config.FRONTEND_URL}?user_id={user_id}"}}
-                            ]]
-                        })
-                    )
-                    logger.info(f"✅ Ответ отправлен, message_id: {sent_message.message_id}")
-                    
+                    # Ждём результат с таймаутом
+                    future.result(timeout=10)
                 except Exception as e:
-                    logger.error(f"❌ Ошибка при отправке сообщения: {e}")
-                    logger.error(traceback.format_exc())
+                    logger.error(f"❌ Ошибка при ожидании ответа: {e}")
         
         return 'ok', 200
         
     except Exception as e:
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА В ВЕБХУКЕ: {e}")
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 # --- 6. API для списка музыки ---
 @app.route('/api/music-list', methods=['GET'])
 def get_music_list():
-    """Возвращает список доступных треков"""
     music_list = [
         {"id": 1, "title": "Тестовая песня 1", "url": "https://example.com/song1.mp3"},
         {"id": 2, "title": "Тестовая песня 2", "url": "https://example.com/song2.mp3"},
@@ -102,27 +116,18 @@ def get_music_list():
 # --- 7. ЗАПУСК ---
 if __name__ == '__main__':
     logger.info("🚀 ЗАПУСК СЕРВЕРА")
-    logger.info(f"✅ BOT_TOKEN: {config.BOT_TOKEN[:10]}...")
-    logger.info(f"✅ FRONTEND_URL: {config.FRONTEND_URL}")
-    logger.info(f"✅ RENDER_EXTERNAL_URL: {config.RENDER_EXTERNAL_URL}")
-    
-    # Получаем информацию о боте
-    try:
-        bot_info = bot.get_me()
-        logger.info(f"✅ Бот @{bot_info.username} (ID: {bot_info.id})")
-    except Exception as e:
-        logger.error(f"❌ Не удалось получить информацию о боте: {e}")
     
     # Устанавливаем вебхук
     webhook_url = f"{config.RENDER_EXTERNAL_URL}/webhook"
     try:
-        logger.info(f"🔄 Устанавливаем вебхук на {webhook_url}")
-        result = bot.set_webhook(url=webhook_url)
-        logger.info(f"✅ Результат установки вебхука: {result}")
+        # Для установки вебхука используем тот же цикл
+        async def setup_webhook():
+            result = await bot.set_webhook(url=webhook_url)
+            logger.info(f"✅ Результат установки вебхука: {result}")
+            webhook_info = await bot.get_webhook_info()
+            logger.info(f"📞 Информация о вебхуке: {webhook_info}")
         
-        # Проверяем вебхук
-        webhook_info = bot.get_webhook_info()
-        logger.info(f"📞 Информация о вебхуке: {webhook_info}")
+        loop.run_until_complete(setup_webhook())
         
     except Exception as e:
         logger.error(f"❌ Ошибка при установке вебхука: {e}")
