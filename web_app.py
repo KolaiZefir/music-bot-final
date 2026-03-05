@@ -1,175 +1,190 @@
 import logging
 import os
-import sys
-import traceback
 import json
-import asyncio
-import time
+import sqlite3
+from datetime import datetime
 from flask import Flask, request, jsonify
 from telegram import Bot, Update
-import config
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- 1. ЛОГИРОВАНИЕ ---
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG,
-    stream=sys.stdout
-)
+# --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 2. Flask ---
+# --- КОНФИГУРАЦИЯ (из переменных окружения) ---
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8496222715:AAF5Yrq4VqWS9KNixjjT_wKInY1OBF9p0lk')
+CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '-1003801427378'))
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://music-frontend.vercel.app')
+RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://music-bot-final-51qb.onrender.com')
+PORT = int(os.environ.get('PORT', 10000))
+
+# --- БАЗА ДАННЫХ (SQLite) ---
+DB_PATH = 'music.db'
+
+def init_db():
+    """Создаёт таблицу для хранения музыки из канала"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT UNIQUE,
+            file_name TEXT,
+            caption TEXT,
+            added_at TIMESTAMP,
+            message_id INTEGER UNIQUE
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    logger.info("✅ База данных инициализирована")
+
+def save_track(file_id, file_name, caption, message_id):
+    """Сохраняет трек в базу данных"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            'INSERT OR IGNORE INTO tracks (file_id, file_name, caption, added_at, message_id) VALUES (?, ?, ?, ?, ?)',
+            (file_id, file_name, caption, datetime.now(), message_id)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения трека: {e}")
+        return False
+
+def get_all_tracks():
+    """Возвращает все треки из базы"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, file_id, file_name, caption FROM tracks ORDER BY added_at DESC')
+    tracks = [{'id': row[0], 'file_id': row[1], 'title': row[2] or 'Без названия', 'caption': row[3]} for row in c.fetchall()]
+    conn.close()
+    return tracks
+
+# --- СОЗДАЁМ БОТА И ПРИЛОЖЕНИЕ ---
+bot = Bot(token=BOT_TOKEN)
+application = Application.builder().token(BOT_TOKEN).build()
+
+# --- ОБРАБОТЧИК КОМАНДЫ /start ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет кнопку с плеером"""
+    user = update.effective_user
+    web_app_url = f"{FRONTEND_URL}?user_id={user.id}"
+    
+    await update.message.reply_text(
+        f"🎵 Привет, {user.first_name}!\n\n"
+        f"Это музыкальный плеер. Нажми кнопку ниже, чтобы слушать музыку из канала.\n\n"
+        f"📌 Бот должен быть админом канала!",
+        reply_markup={
+            "inline_keyboard": [[
+                {"text": "🎧 ОТКРЫТЬ ПЛЕЕР", "web_app": {"url": web_app_url}}
+            ]]
+        }
+    )
+    logger.info(f"✅ Ответ на /start отправлен пользователю {user.id}")
+
+# --- ОБРАБОТЧИК СООБЩЕНИЙ ИЗ КАНАЛА ---
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет аудиофайлы из канала в базу данных"""
+    message = update.channel_post
+    
+    # Проверяем, что сообщение из нужного канала
+    if message.chat.id != CHANNEL_ID:
+        return
+    
+    # Проверяем, есть ли аудио
+    if message.audio:
+        file_id = message.audio.file_id
+        file_name = message.audio.file_name or message.audio.title or f"audio_{message.message_id}.mp3"
+        caption = message.caption or ""
+        
+        if save_track(file_id, file_name, caption, message.message_id):
+            logger.info(f"✅ Сохранён трек: {file_name}")
+            await message.reply_text(f"✅ Трек сохранён: {file_name}")
+    
+    # Проверяем, есть ли документ (возможно, mp3)
+    elif message.document and message.document.mime_type == 'audio/mpeg':
+        file_id = message.document.file_id
+        file_name = message.document.file_name or f"doc_{message.message_id}.mp3"
+        caption = message.caption or ""
+        
+        if save_track(file_id, file_name, caption, message.message_id):
+            logger.info(f"✅ Сохранён документ: {file_name}")
+            await message.reply_text(f"✅ Трек сохранён: {file_name}")
+
+# --- РЕГИСТРИРУЕМ ОБРАБОТЧИКИ ---
+application.add_handler(CommandHandler("start", start_command))
+application.add_handler(MessageHandler(filters.Chat(chat_id=CHANNEL_ID) & filters.AUDIO, channel_post_handler))
+application.add_handler(MessageHandler(filters.Chat(chat_id=CHANNEL_ID) & filters.Document.MP3, channel_post_handler))
+
+# --- СОЗДАЁМ FLASK-ПРИЛОЖЕНИЕ ---
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 
-# --- 3. СОЗДАЁМ БОТА И ЦИКЛ СОБЫТИЙ ---
-bot = Bot(token=config.BOT_TOKEN)
-
-# Создаём глобальный цикл событий
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
-# Инициализируем бота
-loop.run_until_complete(bot.initialize())
-logger.info("✅ Бот инициализирован")
-
-# Получаем информацию о боте
-try:
-    bot_info = loop.run_until_complete(bot.get_me())
-    logger.info(f"✅ Бот: @{bot_info.username} (ID: {bot_info.id})")
-except Exception as e:
-    logger.error(f"❌ Не удалось получить инфо о боте: {e}")
-
-# --- 4. Главная страница ---
+# --- МАРШРУТЫ FLASK ---
 @app.route('/')
 def index():
+    """Главная страница"""
     return jsonify({
-        "status": "работает! 👍",
-        "message": "Music Bot Backend",
-        "webhook_url": f"{config.RENDER_EXTERNAL_URL}/webhook"
+        "status": "работает! 🎵",
+        "bot": "@my_music_player_2024_bot",
+        "channel_id": CHANNEL_ID,
+        "tracks_count": len(get_all_tracks()),
+        "webhook": f"{RENDER_EXTERNAL_URL}/webhook"
     })
 
-# --- 5. ВЕБХУК ---
+@app.route('/api/tracks')
+def api_tracks():
+    """API для фронтенда: возвращает список треков"""
+    return jsonify(get_all_tracks())
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Принимает обновления от Telegram"""
-    logger.info("="*50)
-    logger.info("🔥 ПОЛУЧЕН ЗАПРОС НА /webhook")
-    start_time = time.time()
-    
     try:
-        # Получаем данные
         update_data = request.get_json()
-        logger.info(f"Body: {update_data}")
+        logger.info(f"🔥 Получен webhook: {update_data.get('update_id')}")
         
-        if not update_data:
-            logger.error("❌ Пустые данные")
-            return jsonify({"error": "empty"}), 400
+        # Обрабатываем обновление асинхронно
+        update = Update.de_json(update_data, bot)
         
-        # Проверяем, что это сообщение
-        if 'message' in update_data:
-            message = update_data['message']
-            text = message.get('text', '')
-            chat_id = message['chat']['id']
-            user = message['from']
-            user_id = user.get('id')
-            first_name = user.get('first_name', 'пользователь')
-            
-            logger.info(f"📨 Сообщение от {first_name} (ID: {user_id}, chat: {chat_id}): {text}")
-            
-            # Если это /start - отвечаем
-            if text == '/start':
-                logger.info(f"🔥 Отвечаем на /start для {chat_id}")
-                
-                # СОЗДАЁМ КОРУТИНУ ДЛЯ ОТПРАВКИ С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ
-                async def send_reply():
-                    try:
-                        logger.info(f"🔄 Начинаем отправку сообщения в чат {chat_id}")
-                        
-                        # Проверяем, что бот может отправлять сообщения
-                        logger.info(f"🔄 Проверка прав бота...")
-                        
-                        # Отправляем сообщение
-                        msg = await bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🎵 Привет, {first_name}!\n\nНажми кнопку ниже, чтобы открыть музыкальный плеер:",
-                            reply_markup=json.dumps({
-                                "inline_keyboard": [[
-                                    {"text": "🎵 Открыть плеер", "web_app": {"url": f"{config.FRONTEND_URL}?user_id={user_id}"}}
-                                ]]
-                            })
-                        )
-                        logger.info(f"✅ Сообщение отправлено! ID: {msg.message_id}")
-                        logger.info(f"✅ Текст сообщения: {msg.text}")
-                        logger.info(f"✅ Чат: {msg.chat.id} ({msg.chat.type})")
-                        return msg
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка в send_reply: {e}")
-                        logger.error(f"❌ Тип ошибки: {type(e)}")
-                        logger.error(f"❌ Полный traceback: {traceback.format_exc()}")
-                        return None
-                
-                # ЗАПУСКАЕМ КОРУТИНУ В ГЛОБАЛЬНОМ ЦИКЛЕ
-                logger.info("🔄 Отправляем задачу в event loop...")
-                future = asyncio.run_coroutine_threadsafe(send_reply(), loop)
-                
-                try:
-                    # Ждём результат с большим таймаутом
-                    logger.info("🔄 Ожидаем результат...")
-                    result = future.result(timeout=30)
-                    if result:
-                        logger.info(f"✅ Успешно получен результат: {result.message_id}")
-                    else:
-                        logger.error("❌ Результат отсутствует")
-                except asyncio.TimeoutError:
-                    logger.error("❌ Таймаут при ожидании ответа (30 сек)")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка при ожидании ответа: {e}")
-                    logger.error(traceback.format_exc())
+        # Запускаем обработку в существующем цикле
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
-        elapsed = time.time() - start_time
-        logger.info(f"✅ Обработка завершена за {elapsed:.2f} сек")
+        loop.run_until_complete(application.process_update(update))
+        
         return 'ok', 200
-        
     except Exception as e:
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"❌ Ошибка webhook: {e}")
+        return 'error', 500
 
-# --- 6. API для списка музыки ---
-@app.route('/api/music-list', methods=['GET'])
-def get_music_list():
-    music_list = [
-        {"id": 1, "title": "Тестовая песня 1", "url": "https://example.com/song1.mp3"},
-        {"id": 2, "title": "Тестовая песня 2", "url": "https://example.com/song2.mp3"},
-    ]
-    return jsonify(music_list)
-
-# --- 7. ЗАПУСК ---
+# --- ЗАПУСК ---
 if __name__ == '__main__':
-    logger.info("🚀 ЗАПУСК СЕРВЕРА")
-    logger.info(f"✅ BOT_TOKEN: {config.BOT_TOKEN[:10]}...")
-    logger.info(f"✅ FRONTEND_URL: {config.FRONTEND_URL}")
-    logger.info(f"✅ RENDER_EXTERNAL_URL: {config.RENDER_EXTERNAL_URL}")
+    # Инициализируем базу данных
+    init_db()
+    
+    # Инициализируем приложение Telegram
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.initialize())
     
     # Устанавливаем вебхук
-    webhook_url = f"{config.RENDER_EXTERNAL_URL}/webhook"
+    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
     try:
-        # Для установки вебхука используем тот же цикл
-        async def setup_webhook():
-            logger.info(f"🔄 Устанавливаем вебхук на {webhook_url}")
-            result = await bot.set_webhook(url=webhook_url)
-            logger.info(f"✅ Результат установки вебхука: {result}")
-            
-            webhook_info = await bot.get_webhook_info()
-            logger.info(f"📞 Информация о вебхуке: {webhook_info}")
-            return webhook_info
-        
-        webhook_info = loop.run_until_complete(setup_webhook())
-        
+        loop.run_until_complete(bot.set_webhook(url=webhook_url))
+        logger.info(f"✅ Вебхук установлен: {webhook_url}")
     except Exception as e:
-        logger.error(f"❌ Ошибка при установке вебхука: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Ошибка установки вебхука: {e}")
     
     # Запускаем Flask
-    logger.info(f"🚀 Сервер запускается на порту {config.PORT}")
-    app.run(host='0.0.0.0', port=config.PORT, debug=False)
+    logger.info(f"🚀 Сервер запущен на порту {PORT}")
+    app.run(host='0.0.0.0', port=PORT)
