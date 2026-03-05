@@ -26,6 +26,10 @@ bot = Bot(token=config.BOT_TOKEN)
 # --- 4. Создаём обработчик команд ---
 telegram_app = Application.builder().token(config.BOT_TOKEN).build()
 
+# --- ВАЖНО! Инициализируем приложение ---
+import asyncio
+asyncio.run(telegram_app.initialize())
+
 # --- 5. Команда /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Когда пользователь пишет /start - показываем кнопку с плеером"""
