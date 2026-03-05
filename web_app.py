@@ -87,13 +87,17 @@ def webhook():
         update = Update.de_json(update_data, bot)
         logger.info(f"✅ Update создан: {update.update_id}")
 
-        # --- ЕДИНСТВЕННЫЙ ПРАВИЛЬНЫЙ СПОСОБ ---
-        # Отправляем задачу в существующий цикл событий
-        asyncio.run_coroutine_threadsafe(
-            telegram_app.process_update(update),
-            asyncio.get_event_loop()
-        )
-        logger.info("✅ Задача отправлена в цикл событий")
+        # --- ПРОСТОЕ РАБОЧЕЕ РЕШЕНИЕ ---
+        # Получаем или создаём event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        # Запускаем обработку и ждём результат
+        loop.run_until_complete(telegram_app.process_update(update))
+        logger.info("✅ Update обработан")
 
         return 'ok', 200
 
