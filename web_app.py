@@ -87,28 +87,13 @@ def webhook():
         update = Update.de_json(update_data, bot)
         logger.info(f"✅ Update создан: {update.update_id}")
 
-        # --- Корректная работа с event loop ---
-        try:
-            # Пытаемся получить текущий цикл событий
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                # Если цикла нет, создаём новый
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-            # Если цикл уже запущен (например, в gunicorn), создаём задачу
-            if loop.is_running():
-                asyncio.create_task(telegram_app.process_update(update))
-                logger.info("✅ Задача создана в работающем цикле")
-            else:
-                # Если цикл не запущен, запускаем и ждём
-                loop.run_until_complete(telegram_app.process_update(update))
-                logger.info("✅ Update обработан в новом цикле")
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка при обработке Update: {e}")
-            logger.error(traceback.format_exc())
+        # --- ЕДИНСТВЕННЫЙ ПРАВИЛЬНЫЙ СПОСОБ ---
+        # Отправляем задачу в существующий цикл событий
+        asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update),
+            asyncio.get_event_loop()
+        )
+        logger.info("✅ Задача отправлена в цикл событий")
 
         return 'ok', 200
 
