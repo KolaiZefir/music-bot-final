@@ -6,16 +6,17 @@ load_dotenv()
 # Токен бота
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8496222715:AAF5Yrq4VqWS9KNixjjT_wKInY1OBF9p0lk')
 
-# ВАШ РЕАЛЬНЫЙ IP ИЗ IPCONFIG (ЗАМЕНИТЕ НА СВОЙ!)
-LOCAL_IP = '192.168.0.2'  # ВСТАВЬТЕ СЮДА ВАШ IP
+# Порт для сервера (Render сам задаёт PORT)
+PORT = int(os.environ.get('PORT', 8443))
 
-PORT = 8443  # Порт для HTTPS
+# URL фронтенда (Vercel)
+FRONTEND_URL = "https://music-frontend.vercel.app"
 
-# URL для Mini App
-APP_URL = f"https://music-bot-final-51qb.onrender.com"
-
-# Пути к SSL сертификатам
-SSL_CERT = 'cert.pem'
-SSL_KEY = 'key.pem'
-
+# URL бэкенда на Render
 RENDER_EXTERNAL_URL = "https://music-bot-final-51qb.onrender.com"
+
+# Эти переменные больше не нужны для Render, оставляем для локальной разработки
+# LOCAL_IP = '192.168.0.2'
+# APP_URL = f"https://music-bot-final-51qb.onrender.com"
+# SSL_CERT = 'cert.pem'
+# SSL_KEY = 'key.pem'
