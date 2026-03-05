@@ -70,6 +70,36 @@ app.config['JSON_AS_ASCII'] = False
 bot = None
 application = None
 
+# --- ОБРАБОТЧИКИ КОМАНД (определяем как обычные функции) ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
+    user = update.effective_user
+    web_app_url = f"{FRONTEND_URL}?user_id={user.id}"
+    
+    await update.message.reply_text(
+        f"🎵 Привет, {user.first_name}!",
+        reply_markup={
+            "inline_keyboard": [[
+                {"text": "🎧 ОТКРЫТЬ ПЛЕЕР", "web_app": {"url": web_app_url}}
+            ]]
+        }
+    )
+    logger.info(f"✅ Ответ на /start отправлен пользователю {user.id}")
+
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет аудио из канала"""
+    message = update.channel_post
+    if message.chat.id != CHANNEL_ID:
+        return
+    
+    if message.audio:
+        file_id = message.audio.file_id
+        file_name = message.audio.file_name or f"audio_{message.message_id}.mp3"
+        caption = message.caption or ""
+        
+        if save_track(file_id, file_name, caption, message.message_id):
+            logger.info(f"✅ Сохранён трек: {file_name}")
+
 # --- ФУНКЦИЯ ДЛЯ ИНИЦИАЛИЗАЦИИ БОТА ---
 def init_bot():
     global bot, application
@@ -77,26 +107,15 @@ def init_bot():
         bot = Bot(token=BOT_TOKEN)
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # Регистрируем обработчики
-        @application.message(Command("start"))
-        async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            user = update.effective_user
-            web_app_url = f"{FRONTEND_URL}?user_id={user.id}"
-            
-            await update.message.reply_text(
-                f"🎵 Привет, {user.first_name}!",
-                reply_markup={
-                    "inline_keyboard": [[
-                        {"text": "🎧 ОТКРЫТЬ ПЛЕЕР", "web_app": {"url": web_app_url}}
-                    ]]
-                }
-            )
-            logger.info(f"✅ Ответ на /start отправлен")
+        # Регистрируем обработчики ПРАВИЛЬНЫМ способом
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(MessageHandler(filters.Chat(chat_id=CHANNEL_ID) & filters.AUDIO, channel_post_handler))
         
-        # Инициализируем приложение
+        # Инициализируем
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(application.initialize())
+        loop.run_until_complete(bot.initialize())
         logger.info("✅ Бот инициализирован")
     
     return bot, application
@@ -125,19 +144,25 @@ def webhook():
         
         # Получаем данные
         update_data = request.get_json()
-        logger.info(f"🔥 Webhook: {update_data.get('update_id')}")
+        logger.info(f"🔥 Webhook: {update_data.get('update_id') if update_data else 'None'}")
+        
+        if not update_data:
+            return 'ok', 200
         
         # Создаём объект Update
         update = Update.de_json(update_data, bot)
         
-        # Обрабатываем
+        # Обрабатываем в новом цикле
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(application.process_update(update))
+        loop.close()
         
         return 'ok', 200
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return 'error', 500
 
 # --- ЗАПУСК ---
@@ -154,9 +179,14 @@ if __name__ == '__main__':
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(bot.set_webhook(url=webhook_url))
-        logger.info(f"✅ Вебхук: {webhook_url}")
+        logger.info(f"✅ Вебхук установлен: {webhook_url}")
+        
+        # Проверяем вебхук
+        info = loop.run_until_complete(bot.get_webhook_info())
+        logger.info(f"📞 Информация: {info}")
     except Exception as e:
         logger.error(f"❌ Ошибка вебхука: {e}")
     
     # Запускаем Flask
+    logger.info(f"🚀 Сервер запущен на порту {PORT}")
     app.run(host='0.0.0.0', port=PORT)
