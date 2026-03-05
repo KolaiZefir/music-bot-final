@@ -22,9 +22,14 @@ app.config['JSON_AS_ASCII'] = False
 
 # --- 3. Создаём бота ---
 bot = Bot(token=config.BOT_TOKEN)
+# Инициализируем бота
+import asyncio
+asyncio.run(bot.initialize())
 
 # --- 4. Создаём обработчик команд ---
+# --- 4. Создаём обработчик команд ---
 telegram_app = Application.builder().token(config.BOT_TOKEN).build()
+asyncio.run(telegram_app.initialize()
 
 # --- ВАЖНО! Инициализируем приложение ---
 import asyncio
