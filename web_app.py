@@ -21,16 +21,19 @@ logger.setLevel(logging.DEBUG)
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 
-# --- 3. Создаём и инициализируем бота ---
+# --- 3. ГЛОБАЛЬНЫЙ ЦИКЛ СОБЫТИЙ (исправляет ошибку с закрытием) ---
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# --- 4. Создаём и инициализируем бота ---
 bot = Bot(token=config.BOT_TOKEN)
-# Инициализация бота (обязательно!)
-asyncio.run(bot.initialize())
+loop.run_until_complete(bot.initialize())
 
-# --- 4. Создаём и инициализируем обработчик команд ---
+# --- 5. Создаём и инициализируем обработчик команд ---
 telegram_app = Application.builder().token(config.BOT_TOKEN).build()
-asyncio.run(telegram_app.initialize())
+loop.run_until_complete(telegram_app.initialize())
 
-# --- 5. Команда /start ---
+# --- 6. Команда /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет кнопку с ссылкой на Mini App"""
     try:
@@ -52,10 +55,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в start: {e}\n{traceback.format_exc()}")
 
-# --- 6. Регистрируем команду ---
+# --- 7. Регистрируем команду ---
 telegram_app.add_handler(CommandHandler("start", start))
 
-# --- 7. Главная страница ---
+# --- 8. Главная страница ---
 @app.route('/')
 def index():
     return jsonify({
@@ -64,20 +67,18 @@ def index():
         "webhook_url": f"{config.RENDER_EXTERNAL_URL}/webhook"
     })
 
-# --- 8. Вебхук для Telegram (с безопасной работой с asyncio) ---
+# --- 9. ВЕБХУК (ПРОСТОЙ И РАБОЧИЙ) ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Принимает обновления от Telegram"""
-    logger.info("="*50)
     logger.info("🔥 ПОЛУЧЕН ЗАПРОС НА /webhook")
 
     try:
-        # Получаем данные от Telegram
+        # Получаем данные
         update_data = request.get_json()
         logger.info(f"Body: {update_data}")
 
         if not update_data:
-            logger.error("❌ Пустые данные")
             return jsonify({"error": "empty data"}), 400
 
         if 'message' in update_data:
@@ -87,55 +88,44 @@ def webhook():
         update = Update.de_json(update_data, bot)
         logger.info(f"✅ Update создан: {update.update_id}")
 
-        # --- ПРОСТОЕ РАБОЧЕЕ РЕШЕНИЕ ---
-        # Получаем или создаём event loop
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        # Запускаем обработку и ждём результат
-        loop.run_until_complete(telegram_app.process_update(update))
+        # --- ЕДИНСТВЕННЫЙ РАБОЧИЙ СПОСОБ ---
+        # Используем ГЛОБАЛЬНЫЙ цикл, который уже работает
+        future = asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update),
+            loop
+        )
+        # Ждём результат (необязательно, но для логов)
+        future.result(timeout=5)
         logger.info("✅ Update обработан")
 
         return 'ok', 200
 
     except Exception as e:
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА В ВЕБХУКЕ: {e}")
+        logger.error(f"❌ ОШИБКА: {e}")
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
-# --- 9. API для фронтенда (список треков) ---
+# --- 10. API для фронтенда ---
 @app.route('/api/music-list', methods=['GET'])
 def get_music_list():
-    """Возвращает тестовый список песен"""
     music_list = [
         {"id": 1, "title": "Тестовая песня 1", "url": "https://example.com/song1.mp3"},
         {"id": 2, "title": "Тестовая песня 2", "url": "https://example.com/song2.mp3"},
     ]
     return jsonify(music_list)
 
-# --- 10. Запуск сервера ---
+# --- 11. ЗАПУСК ---
 if __name__ == '__main__':
     logger.info("🚀 ЗАПУСК СЕРВЕРА")
-    logger.info(f"✅ BOT_TOKEN: {config.BOT_TOKEN[:10]}...")
-    logger.info(f"✅ FRONTEND_URL: {config.FRONTEND_URL}")
-    logger.info(f"✅ RENDER_EXTERNAL_URL: {config.RENDER_EXTERNAL_URL}")
 
-    # Устанавливаем вебхук при старте
+    # Устанавливаем вебхук
     webhook_url = f"{config.RENDER_EXTERNAL_URL}/webhook"
     try:
         logger.info(f"🔄 Устанавливаем вебхук на {webhook_url}")
         result = bot.set_webhook(url=webhook_url)
-        logger.info(f"✅ Результат установки вебхука: {result}")
-
-        # Проверяем информацию о вебхуке
-        webhook_info = bot.get_webhook_info()
-        logger.info(f"📞 Информация о вебхуке: {webhook_info}")
+        logger.info(f"✅ Результат: {result}")
     except Exception as e:
-        logger.error(f"❌ Не удалось установить вебхук: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Ошибка установки вебхука: {e}")
 
-    # Запускаем Flask-приложение
+    # Запускаем Flask (в том же потоке, цикл уже работает)
     app.run(host='0.0.0.0', port=config.PORT, debug=False)
