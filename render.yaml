@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: music-bot-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web_app:app
+    envVars:
+      - key: BOT_TOKEN
+        value: 8496222715:AAF5Yrq4VqWS9KNixjjT_wKInY1OBF9p0lk
